@@ -92,9 +92,9 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.status == 'Posted' or instance.status == 'Paid':
+        if instance.status != 'Draft':
             return Response(
-                {"detail": "Cannot delete a posted or paid invoice."},
+                {"detail": "Posted or Paid invoices cannot be deleted. Please reverse or void the transaction instead."},
                 status=status.HTTP_400_BAD_REQUEST
             )
         try:

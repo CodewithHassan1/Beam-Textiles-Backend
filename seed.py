@@ -104,7 +104,7 @@ def seed_database():
     )
 
     print("Step 5: Simulating Supply Chain Purchase Bills (Inventory Receipts)...")
-    # Purchase 50 laptops @ $800 each
+    # Purchase 50 laptops @ Rs 800 each
     bill1, created1 = Invoice.objects.get_or_create(
         partner=techcorp,
         invoice_type="Vendor",
@@ -123,9 +123,9 @@ def seed_database():
         bill1.total_amount = Decimal('46000.00')
         bill1.save()
         process_invoice_posting(bill1.id)
-        print("  -> Vendor bill posted for 50 Laptops (AVCO cost base established at $800).")
+        print("  -> Vendor bill posted for 50 Laptops (AVCO cost base established at Rs 800).")
 
-    # Purchase 30 monitors @ $300 each
+    # Purchase 30 monitors @ Rs 300 each
     bill2, created2 = Invoice.objects.get_or_create(
         partner=techcorp,
         invoice_type="Vendor",
@@ -143,9 +143,9 @@ def seed_database():
         bill2.total_amount = Decimal('9900.00')
         bill2.save()
         process_invoice_posting(bill2.id)
-        print("  -> Vendor bill posted for 30 Monitors (FIFO layer 1 established: 30 @ $300).")
+        print("  -> Vendor bill posted for 30 Monitors (FIFO layer 1 established: 30 @ Rs 300).")
 
-    # Purchase 20 more monitors @ $350 each (price increased)
+    # Purchase 20 more monitors @ Rs 350 each (price increased)
     bill3, created3 = Invoice.objects.get_or_create(
         partner=techcorp,
         invoice_type="Vendor",
@@ -163,10 +163,10 @@ def seed_database():
         bill3.total_amount = Decimal('7700.00')
         bill3.save()
         process_invoice_posting(bill3.id)
-        print("  -> Vendor bill posted for 20 Monitors (FIFO layer 2 established: 20 @ $350).")
+        print("  -> Vendor bill posted for 20 Monitors (FIFO layer 2 established: 20 @ Rs 350).")
 
     print("Step 6: Simulating Sales Invoices (Customer Orders & COGS Automation)...")
-    # Sell 10 laptops @ $1200 each and 35 monitors @ $500 each to Acme Corp
+    # Sell 10 laptops @ Rs 1200 each and 35 monitors @ Rs 500 each to Acme Corp
     inv1, created_inv1 = Invoice.objects.get_or_create(
         partner=acme,
         invoice_type="Customer",
@@ -178,17 +178,17 @@ def seed_database():
         }
     )
     if created_inv1:
-        InvoiceLine.objects.create(invoice=inv1, inventory_item=laptop, quantity=Decimal('10.00'), unit_price=Decimal('1200.00')) # $12,000
-        InvoiceLine.objects.create(invoice=inv1, inventory_item=monitor, quantity=Decimal('35.00'), unit_price=Decimal('500.00'))  # $17,500
+        InvoiceLine.objects.create(invoice=inv1, inventory_item=laptop, quantity=Decimal('10.00'), unit_price=Decimal('1200.00')) # Rs 12,000
+        InvoiceLine.objects.create(invoice=inv1, inventory_item=monitor, quantity=Decimal('35.00'), unit_price=Decimal('500.00'))  # Rs 17,500
         inv1.subtotal = Decimal('29500.00')
         inv1.tax_amount = Decimal('4425.00')
         inv1.total_amount = Decimal('33925.00')
         inv1.save()
         process_invoice_posting(inv1.id)
-        # FIFO monitor COGS should be: (30 @ $300) + (5 @ $350) = $9,000 + $1,750 = $10,750
-        # AVCO laptop COGS should be: 10 @ $800 = $8,000
+        # FIFO monitor COGS should be: (30 @ Rs 300) + (5 @ Rs 350) = Rs 9,000 + Rs 1,750 = Rs 10,750
+        # AVCO laptop COGS should be: 10 @ Rs 800 = Rs 8,000
         print("  -> Customer invoice posted for 10 Laptops & 35 Monitors.")
-        print("     - FIFO Costing verified: 35 Monitors sold (exhausted 30 units @ $300 and 5 units @ $350).")
+        print("     - FIFO Costing verified: 35 Monitors sold (exhausted 30 units @ Rs 300 and 5 units @ Rs 350).")
 
     print("Step 7: Creating Bank Statement Lines for Reconciliation...")
     # We create some unreconciled lines, and some that are ready to match

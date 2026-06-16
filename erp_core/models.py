@@ -125,7 +125,7 @@ class InventoryItem(models.Model):
     avg_unit_cost = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
 
     def __str__(self):
-        return f"{self.sku} - {self.name} (Qty: {self.stock_qty}, Avg Cost: ${self.avg_unit_cost:.2f})"
+        return f"{self.sku} - {self.name} (Qty: {self.stock_qty}, Avg Cost: Rs {self.avg_unit_cost:.2f})"
 
 
 class StockTransaction(models.Model):
@@ -142,7 +142,7 @@ class StockTransaction(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.transaction_type}: {self.inventory_item.sku} Qty {self.quantity} @ ${self.unit_cost:.2f}"
+        return f"{self.transaction_type}: {self.inventory_item.sku} Qty {self.quantity} @ Rs {self.unit_cost:.2f}"
 
 
 class Invoice(models.Model):
@@ -170,7 +170,12 @@ class Invoice(models.Model):
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
 
     def __str__(self):
-        return f"{self.invoice_type} Invoice #{self.id} for {self.partner.name} - ${self.total_amount:.2f} ({self.status})"
+        return f"{self.invoice_type} Invoice #{self.id} for {self.partner.name} - Rs {self.total_amount:.2f} ({self.status})"
+
+    def delete(self, *args, **kwargs):
+        if self.status != 'Draft':
+            raise ValidationError("Posted or Paid invoices cannot be deleted. Please reverse or void the transaction instead.")
+        super().delete(*args, **kwargs)
 
 
 class InvoiceLine(models.Model):
@@ -197,4 +202,4 @@ class BankStatementLine(models.Model):
 
     def __str__(self):
         status = "Reconciled" if self.reconciled else "Unreconciled"
-        return f"{self.date} - {self.description} - ${self.amount:.2f} ({status})"
+        return f"{self.date} - {self.description} - Rs {self.amount:.2f} ({status})"
