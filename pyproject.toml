@@ -1,0 +1,2 @@
+[tool.vercel]
+entrypoint = "erp_backend.wsgi:application"
