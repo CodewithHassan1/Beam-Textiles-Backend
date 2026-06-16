@@ -1,2 +1,16 @@
+[project]
+name = "erp-backend"
+version = "0.1.0"
+description = "Beam Textiles ERP Backend"
+dependencies = [
+    "django>=4.2,<5.0",
+    "djangorestframework>=3.14,<4.0",
+    "django-cors-headers>=4.0,<5.0",
+    "psycopg2-binary>=2.9,<3.0",
+    "dj-database-url>=2.0,<3.0",
+    "whitenoise>=6.5,<7.0",
+    "gunicorn>=21.2,<22.0",
+]
+
 [tool.vercel]
-entrypoint = "erp_backend.wsgi:application"
+entrypoint = "erp_backend/wsgi.py"
