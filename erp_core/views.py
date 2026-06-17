@@ -7,7 +7,7 @@ from django.db.models import ProtectedError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from django.utils.dateparse import parse_date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import datetime
 
 from .models import (
@@ -117,84 +117,229 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             raise DRFValidationError(e.message)
 
 
+def _bank_accounts():
+    """Accounts that represent real cash/bank movements. Falls back to a code/name
+    heuristic for databases created before the is_bank flag existed."""
+    from django.db.models import Q
+    qs = Account.objects.filter(is_bank=True)
+    if qs.exists():
+        return qs
+    return Account.objects.filter(account_type='Asset').filter(
+        Q(code='10100') | Q(name__icontains='bank') | Q(name__icontains='cash')
+    )
+
+
+def _candidate_lines(statement, bank_account_ids, window_days=10):
+    """Posted, still-unmatched transaction lines on a BANK account, in the correct
+    direction, within +/- window_days of the statement date."""
+    start = statement.date - datetime.timedelta(days=window_days)
+    end = statement.date + datetime.timedelta(days=window_days)
+    qs = TransactionLine.objects.filter(
+        journal_entry__posted=True,
+        journal_entry__date__range=(start, end),
+        account_id__in=bank_account_ids,
+        bankstatementline__isnull=True,
+    ).select_related('journal_entry', 'account')
+    # Deposit (+) -> debit to bank; Withdrawal (-) -> credit to bank
+    if statement.amount > 0:
+        qs = qs.filter(debit__gt=0)
+    else:
+        qs = qs.filter(credit__gt=0)
+    return qs
+
+
+def _match_score(statement, line):
+    """Confidence score 0-100 for a (statement, ledger line) pairing."""
+    score = 0
+    target = abs(statement.amount)
+    line_amount = line.debit if line.debit > 0 else line.credit
+    if abs(line_amount - target) < Decimal('0.01'):
+        score += 60                      # exact amount
+    elif target > 0 and abs(line_amount - target) / target <= Decimal('0.02'):
+        score += 35                      # within 2%
+    delta = abs((statement.date - line.journal_entry.date).days)
+    if delta == 0:
+        score += 25
+    elif delta <= 3:
+        score += 18
+    elif delta <= 7:
+        score += 10
+    ref = (line.journal_entry.reference or '').strip().lower()
+    if ref and ref in (statement.description or '').lower():
+        score += 15                      # invoice/journal reference appears in narration
+    return min(score, 100)
+
+
+def _suggest(statement, bank_account_ids, top=3):
+    scored = [
+        (_match_score(statement, ln), ln)
+        for ln in _candidate_lines(statement, bank_account_ids)
+    ]
+    scored = [s for s in scored if s[0] > 0]
+    scored.sort(key=lambda x: (-x[0], abs((statement.date - x[1].journal_entry.date).days)))
+    out = []
+    for sc, ln in scored[:top]:
+        out.append({
+            'transaction_line_id': ln.id,
+            'journal_id': ln.journal_entry_id,
+            'journal_reference': ln.journal_entry.reference,
+            'journal_date': ln.journal_entry.date,
+            'account_code': ln.account.code,
+            'amount': ln.debit if ln.debit > 0 else ln.credit,
+            'confidence': sc,
+        })
+    return out
+
+
 class BankStatementLineViewSet(viewsets.ModelViewSet):
     queryset = BankStatementLine.objects.all().order_by('date', 'id')
     serializer_class = BankStatementLineSerializer
 
+    # DRF's default parsers (JSON, Form, MultiPart) are active, so file uploads
+    # work without extra configuration.
     @action(detail=False, methods=['post'], url_path='import')
-    def import_mock_statements(self, request):
+    def import_csv(self, request):
         """
-        Seed mock bank transactions for demonstration and testing.
+        Import real bank statement lines from an uploaded CSV file.
+        Accepts multipart 'file'. Recognised headers (case-insensitive):
+        date | description/details/narration | amount/value.
+        Returns a summary: imported / skipped (duplicates) / failed (invalid).
         """
-        statements = [
-            {"date": "2026-05-10", "description": "ACH Customer Deposit Co.", "amount": "1150.00"},
-            {"date": "2026-05-12", "description": "Supplier Raw Materials Inv-10", "amount": "-575.00"},
-            {"date": "2026-05-15", "description": "Office Supplies Depot", "amount": "-120.00"},
-            {"date": "2026-05-20", "description": "Customer Payment Ref #2201", "amount": "2300.00"},
-            {"date": "2026-05-22", "description": "Monthly Web Hosting Services", "amount": "-45.00"},
-        ]
+        import csv
+        import io
+
+        upload = request.FILES.get('file')
+        if not upload:
+            return Response({"detail": "No CSV file provided (form field 'file')."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            text = upload.read().decode('utf-8-sig')
+        except UnicodeDecodeError:
+            return Response({"detail": "File must be a UTF-8 encoded CSV."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            return Response({"detail": "CSV is empty or has no header row."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        imported, skipped, failed = 0, 0, 0
+        errors = []
         created = []
         with transaction.atomic():
-            for item in statements:
-                line, created_flag = BankStatementLine.objects.get_or_create(
-                    date=parse_date(item["date"]),
-                    description=item["description"],
-                    amount=Decimal(item["amount"]),
-                    defaults={"reconciled": False}
-                )
-                if created_flag:
-                    created.append(line)
-        
-        serializer = self.get_serializer(created, many=True)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+            for i, row in enumerate(reader, start=2):  # row 1 = header
+                norm = {(k or '').strip().lower(): (v or '').strip() for k, v in row.items()}
+                date_raw = norm.get('date') or norm.get('transaction date') or norm.get('txn date')
+                desc = (norm.get('description') or norm.get('details')
+                        or norm.get('narration') or '').strip()
+                amount_raw = norm.get('amount') or norm.get('value')
+
+                d = parse_date(date_raw) if date_raw else None
+                if not d:
+                    failed += 1
+                    errors.append(f"Row {i}: missing/invalid date '{date_raw}'")
+                    continue
+                try:
+                    amt = Decimal(str(amount_raw).replace(',', '').replace('(', '-').replace(')', ''))
+                except (InvalidOperation, AttributeError, TypeError):
+                    failed += 1
+                    errors.append(f"Row {i}: invalid amount '{amount_raw}'")
+                    continue
+                if not desc:
+                    desc = 'Imported bank transaction'
+
+                if BankStatementLine.objects.filter(date=d, description=desc, amount=amt).exists():
+                    skipped += 1
+                    continue
+
+                created.append(BankStatementLine.objects.create(
+                    date=d, description=desc, amount=amt, reconciled=False))
+                imported += 1
+
+        return Response({
+            'imported': imported,
+            'skipped': skipped,
+            'failed': failed,
+            'errors': errors[:50],
+            'lines': BankStatementLineSerializer(created, many=True).data,
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='auto-match')
     def auto_match(self, request):
         """
-        Reconciliation engine: Automatically matches BankStatementLines to general ledger
-        TransactionLines with matching amounts and date proximity (+/- 7 days).
+        Accounting-safe auto reconciliation: scores candidate BANK-account ledger
+        lines by amount, date proximity and reference, and auto-links only
+        high-confidence matches (>= 80). Uses live ledger data — never hardcoded.
         """
-        unreconciled_lines = BankStatementLine.objects.filter(reconciled=False)
-        matched_count = 0
+        bank_ids = list(_bank_accounts().values_list('id', flat=True))
+        if not bank_ids:
+            return Response({"detail": "No bank account configured. Flag a cash/bank account first."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # We assume cash/bank general ledger transactions correspond to Accounts Receivable,
-        # Accounts Payable, or standard bank ledger accounts (e.g. 10100 Cash/Bank Asset account)
-        # Let's search any posted transaction line whose value matches
-        for statement in unreconciled_lines:
-            target_amount = abs(statement.amount)
-            # Find date bounds (+/- 7 days)
-            start_date = statement.date - datetime.timedelta(days=7)
-            end_date = statement.date + datetime.timedelta(days=7)
-
-            # Query candidate TransactionLines that are posted, unreconciled, and within proximity
-            candidates = TransactionLine.objects.filter(
-                journal_entry__posted=True,
-                journal_entry__date__range=(start_date, end_date),
-                bankstatementline__isnull=True  # Ensure it hasn't been matched yet
-            )
-
-            # Filter by matching credit or debit depending on sign
-            if statement.amount > 0:
-                # Receipt -> should match a debit to Cash/Bank account (increasing asset)
-                # or a credit to Accounts Receivable (reducing customer balance)
-                # We search lines with debit or credit of matching amount
-                candidates = candidates.filter(debit=target_amount)
-            else:
-                # Withdrawal -> should match a credit to Cash/Bank (decreasing asset)
-                # or a debit to Accounts Payable (reducing supplier liability)
-                candidates = candidates.filter(credit=target_amount)
-
-            match = candidates.first()
-            if match:
-                statement.matched_transaction_line = match
-                statement.reconciled = True
-                statement.save()
-                matched_count += 1
+        matched = []
+        THRESHOLD = 80
+        with transaction.atomic():
+            for statement in BankStatementLine.objects.filter(reconciled=False):
+                suggestions = _suggest(statement, bank_ids, top=1)
+                if suggestions and suggestions[0]['confidence'] >= THRESHOLD:
+                    best = suggestions[0]
+                    statement.matched_transaction_line_id = best['transaction_line_id']
+                    statement.reconciled = True
+                    statement.save()
+                    matched.append({
+                        'bank_line_id': statement.id,
+                        'description': statement.description,
+                        'transaction_line_id': best['transaction_line_id'],
+                        'journal_reference': best['journal_reference'],
+                        'confidence': best['confidence'],
+                    })
 
         return Response({
             'status': 'Reconciliation run completed',
-            'matched_records_count': matched_count
+            'matched_records_count': len(matched),
+            'threshold': THRESHOLD,
+            'matches': matched,
         }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='suggestions')
+    def suggestions(self, request, pk=None):
+        """Return ranked candidate matches (with confidence) for one statement line."""
+        statement = self.get_object()
+        bank_ids = list(_bank_accounts().values_list('id', flat=True))
+        return Response({
+            'bank_line_id': statement.id,
+            'suggestions': _suggest(statement, bank_ids, top=5),
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='match')
+    def manual_match(self, request, pk=None):
+        """Manually link a statement line to a specific bank ledger TransactionLine."""
+        statement = self.get_object()
+        line_id = request.data.get('transaction_line_id')
+        if not line_id:
+            return Response({"detail": "transaction_line_id is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            line = TransactionLine.objects.select_related('account', 'journal_entry').get(pk=line_id)
+        except TransactionLine.DoesNotExist:
+            return Response({"detail": "Ledger transaction line not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+        if hasattr(line, 'bankstatementline') and line.bankstatementline and line.bankstatementline.id != statement.id:
+            return Response({"detail": "That ledger line is already matched to another statement."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        statement.matched_transaction_line = line
+        statement.reconciled = True
+        statement.save()
+        return Response(self.get_serializer(statement).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='unmatch')
+    def manual_unmatch(self, request, pk=None):
+        """Remove an existing match and return the statement line to pending."""
+        statement = self.get_object()
+        statement.matched_transaction_line = None
+        statement.reconciled = False
+        statement.save()
+        return Response(self.get_serializer(statement).data, status=status.HTTP_200_OK)
 
 
 class DashboardStatsView(APIView):

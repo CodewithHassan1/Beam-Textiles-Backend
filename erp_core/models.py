@@ -15,6 +15,9 @@ class Account(models.Model):
     name = models.CharField(max_length=100)
     account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPES)
     balance = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    # Flags cash/bank ledger accounts so bank reconciliation only matches
+    # statement lines against genuine bank movements (accounting-safe).
+    is_bank = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.code} - {self.name} ({self.account_type})"

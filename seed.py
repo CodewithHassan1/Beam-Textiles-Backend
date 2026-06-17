@@ -24,8 +24,12 @@ def seed_database():
     # Add a cash/bank asset account for bank statement reconciliation
     cash_bank_acc, created = Account.objects.get_or_create(
         code='10100',
-        defaults={'name': 'Cash and Bank Assets', 'account_type': 'Asset', 'balance': Decimal('10000.00')}
+        defaults={'name': 'Cash and Bank Assets', 'account_type': 'Asset', 'balance': Decimal('10000.00'), 'is_bank': True}
     )
+    # Ensure the flag is set even if the account already existed from an older seed
+    if not cash_bank_acc.is_bank:
+        cash_bank_acc.is_bank = True
+        cash_bank_acc.save(update_fields=['is_bank'])
     # Give the bank account some starting money (equity contribution)
     if created:
         print("Created Cash/Bank account. Seeding starting balance...")
@@ -191,8 +195,18 @@ def seed_database():
         print("     - FIFO Costing verified: 35 Monitors sold (exhausted 30 units @ Rs 300 and 5 units @ Rs 350).")
 
     print("Step 7: Creating Bank Statement Lines for Reconciliation...")
-    # We create some unreconciled lines, and some that are ready to match
-    # Let's seed some entries that map to our invoice totals for reconciliation matching
+    # We create some unreconciled lines, and some that are ready to match.
+    # This one corresponds to a real BANK ledger movement (the opening capital
+    # contribution debited to the Cash & Bank account, ref INIT-001) and will
+    # auto-reconcile with high confidence. The invoice-related lines below settle
+    # Accounts Receivable/Payable rather than cash, so they correctly remain
+    # pending until a cash payment is posted.
+    BankStatementLine.objects.get_or_create(
+        date=datetime.date.today(),
+        description="Opening Capital Injection INIT-001",
+        amount=Decimal('10000.00'),
+        reconciled=False
+    )
     BankStatementLine.objects.get_or_create(
         date=datetime.date.today() - datetime.timedelta(days=2),
         description="Wire Deposit Lahore Fabric House INV-1",

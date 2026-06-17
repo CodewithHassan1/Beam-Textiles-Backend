@@ -8,7 +8,7 @@ from .models import (
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
-        fields = ['id', 'code', 'name', 'account_type', 'balance']
+        fields = ['id', 'code', 'name', 'account_type', 'balance', 'is_bank']
         read_only_fields = ['balance']
 
 
