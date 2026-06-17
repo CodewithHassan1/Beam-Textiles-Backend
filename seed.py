@@ -59,34 +59,34 @@ def seed_database():
     print("Step 3: Creating Partners...")
     # Customers
     acme, _ = Partner.objects.get_or_create(
-        name="Acme Corp LLC",
+        name="Lahore Fabric House",
         partner_type="Customer",
-        defaults={"email": "billing@acme.com", "tax_id": "VAT-998877"}
+        defaults={"email": "orders@lahorefabric.pk", "tax_id": "3520112-4"}
     )
     globex, _ = Partner.objects.get_or_create(
-        name="Globex Industries",
+        name="Gulberg Garments Co.",
         partner_type="Customer",
-        defaults={"email": "accounts@globex.com", "tax_id": "VAT-112233"}
+        defaults={"email": "accounts@gulberggarments.pk", "tax_id": "3740998-1"}
     )
-    
+
     # Suppliers
     techcorp, _ = Partner.objects.get_or_create(
-        name="TechCorp Wholesale Supplies",
+        name="Faisalabad Yarn Mills",
         partner_type="Supplier",
-        defaults={"email": "orders@techcorp.com", "tax_id": "VAT-554433"}
+        defaults={"email": "sales@fsdyarnmills.pk", "tax_id": "3310554-3"}
     )
     shipfast, _ = Partner.objects.get_or_create(
-        name="ShipFast Logistics",
+        name="Crescent Cotton Traders",
         partner_type="Supplier",
-        defaults={"email": "billing@shipfast.com", "tax_id": "VAT-667788"}
+        defaults={"email": "billing@crescentcotton.pk", "tax_id": "3210667-8"}
     )
 
     print("Step 4: Creating Inventory Items...")
     # AVCO Costing Item
     laptop, _ = InventoryItem.objects.get_or_create(
-        sku="ITEM-LAP-01",
+        sku="FAB-COT-01",
         defaults={
-            "name": "Enterprise Pro Laptop 15-inch",
+            "name": "Cotton Fabric Roll (per metre)",
             "costing_method": "AVCO",
             "stock_qty": Decimal('0.00'),
             "avg_unit_cost": Decimal('0.00')
@@ -94,9 +94,9 @@ def seed_database():
     )
     # FIFO Costing Item
     monitor, _ = InventoryItem.objects.get_or_create(
-        sku="ITEM-MON-02",
+        sku="YRN-PLY-02",
         defaults={
-            "name": "UltraWide Curved 34-inch Monitor",
+            "name": "Polyester Blended Yarn Cone",
             "costing_method": "FIFO",
             "stock_qty": Decimal('0.00'),
             "avg_unit_cost": Decimal('0.00')
@@ -195,13 +195,13 @@ def seed_database():
     # Let's seed some entries that map to our invoice totals for reconciliation matching
     BankStatementLine.objects.get_or_create(
         date=datetime.date.today() - datetime.timedelta(days=2),
-        description="Wire Deposit Acme Corp INV-1",
+        description="Wire Deposit Lahore Fabric House INV-1",
         amount=Decimal('33925.00'),
         reconciled=False
     )
     BankStatementLine.objects.get_or_create(
         date=datetime.date.today() - datetime.timedelta(days=1),
-        description="ACH Withdrawal TechCorp BILL-1",
+        description="ACH Withdrawal Faisalabad Yarn Mills BILL-1",
         amount=Decimal('-46000.00'),
         reconciled=False
     )
