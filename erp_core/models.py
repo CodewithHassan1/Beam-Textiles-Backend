@@ -1,6 +1,67 @@
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
+from django.contrib.auth.models import User
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from decimal import Decimal
+
+
+class Profile(models.Model):
+    """Role-based access control profile, one per Django user."""
+    ROLE_SUPER_ADMIN = 'super_admin'
+    ROLE_ADMIN = 'admin'
+    ROLE_MANAGER = 'manager'
+    ROLE_STAFF = 'staff'
+    ROLE_CHOICES = [
+        (ROLE_SUPER_ADMIN, 'Super Admin'),
+        (ROLE_ADMIN, 'Admin'),
+        (ROLE_MANAGER, 'Manager'),
+        (ROLE_STAFF, 'Staff'),
+    ]
+    # Privilege rank for hierarchy comparisons (higher = more access).
+    RANK = {ROLE_STAFF: 1, ROLE_MANAGER: 2, ROLE_ADMIN: 3, ROLE_SUPER_ADMIN: 4}
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_STAFF)
+
+    @property
+    def rank(self):
+        return self.RANK.get(self.role, 0)
+
+    def __str__(self):
+        return f"{self.user.username} ({self.role})"
+
+
+@receiver(post_save, sender=User)
+def ensure_profile(sender, instance, created, **kwargs):
+    """Auto-provision a profile. Superusers map to super_admin, staff users to
+    admin, everyone else defaults to the lowest-privilege staff role."""
+    if created:
+        if instance.is_superuser:
+            role = Profile.ROLE_SUPER_ADMIN
+        elif instance.is_staff:
+            role = Profile.ROLE_ADMIN
+        else:
+            role = Profile.ROLE_STAFF
+        Profile.objects.get_or_create(user=instance, defaults={'role': role})
+
+
+class ActivityLog(models.Model):
+    """Append-only audit trail of significant actions."""
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='activity')
+    username = models.CharField(max_length=150, blank=True)  # retained even if user is deleted
+    action = models.CharField(max_length=20)                 # login / create / update / delete
+    model_name = models.CharField(max_length=80, blank=True)
+    object_id = models.CharField(max_length=40, blank=True)
+    detail = models.CharField(max_length=255, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-timestamp', '-id']
+
+    def __str__(self):
+        return f"[{self.timestamp:%Y-%m-%d %H:%M}] {self.username} {self.action} {self.model_name}#{self.object_id}"
 
 class Account(models.Model):
     ACCOUNT_TYPES = [

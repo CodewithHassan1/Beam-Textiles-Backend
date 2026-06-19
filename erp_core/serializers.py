@@ -1,9 +1,16 @@
 from rest_framework import serializers
 from decimal import Decimal
 from .models import (
-    Account, Partner, JournalEntry, TransactionLine, 
-    InventoryItem, StockTransaction, Invoice, InvoiceLine, BankStatementLine
+    Account, Partner, JournalEntry, TransactionLine,
+    InventoryItem, StockTransaction, Invoice, InvoiceLine, BankStatementLine,
+    ActivityLog
 )
+
+
+class ActivityLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ActivityLog
+        fields = ['id', 'username', 'action', 'model_name', 'object_id', 'detail', 'ip_address', 'timestamp']
 
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:

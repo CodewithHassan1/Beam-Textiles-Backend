@@ -14,11 +14,14 @@ class Command(BaseCommand):
         self.stdout.write(self.style.WARNING(f'Deleted {count} existing user(s).'))
 
         # Create the production superuser
-        User.objects.create_superuser(
+        admin = User.objects.create_superuser(
             username='admin',
             email='hassanhaiderwk@gmail.com',
             password='password',
         )
+        # Guarantee the Super Admin role (the post_save signal also sets this).
+        from erp_core.models import Profile
+        Profile.objects.update_or_create(user=admin, defaults={'role': Profile.ROLE_SUPER_ADMIN})
         self.stdout.write(self.style.SUCCESS(
-            'Superuser created: username=admin | email=hassanhaiderwk@gmail.com'
+            'Superuser created: username=admin | role=super_admin'
         ))

@@ -1,10 +1,11 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    AccountViewSet, PartnerViewSet, JournalEntryViewSet, 
-    InventoryItemViewSet, StockTransactionViewSet, InvoiceViewSet, 
-    BankStatementLineViewSet, DashboardStatsView, TrialBalanceView, 
-    ProfitAndLossView, BalanceSheetView, SignUpView, LoginView
+    AccountViewSet, PartnerViewSet, JournalEntryViewSet,
+    InventoryItemViewSet, StockTransactionViewSet, InvoiceViewSet,
+    BankStatementLineViewSet, DashboardStatsView, TrialBalanceView,
+    ProfitAndLossView, BalanceSheetView, SignUpView, LoginView,
+    MeView, ActivityLogViewSet
 )
 
 router = DefaultRouter()
@@ -15,6 +16,7 @@ router.register(r'inventory', InventoryItemViewSet, basename='inventory')
 router.register(r'stock-transactions', StockTransactionViewSet, basename='stock-transaction')
 router.register(r'invoices', InvoiceViewSet, basename='invoice')
 router.register(r'bank-statements', BankStatementLineViewSet, basename='bank-statement')
+router.register(r'activity-logs', ActivityLogViewSet, basename='activity-log')
 
 urlpatterns = [
     # Router endpoints
@@ -23,6 +25,7 @@ urlpatterns = [
     # Custom auth endpoints
     path('auth/signup/', SignUpView.as_view(), name='auth-signup'),
     path('auth/login/', LoginView.as_view(), name='auth-login'),
+    path('auth/me/', MeView.as_view(), name='auth-me'),
 
     # Custom dashboard and reporting endpoints
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),

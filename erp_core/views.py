@@ -24,10 +24,55 @@ from .utils import (
     RECEIVABLES_CODE, PAYABLES_CODE, INVENTORY_ASSET_CODE,
     INPUT_TAX_CODE, OUTPUT_TAX_CODE, REVENUE_CODE, COGS_CODE
 )
+from .models import Profile, ActivityLog
+from .permissions import RoleBasedPermission, IsAdminRole, user_role
 
-class AccountViewSet(viewsets.ModelViewSet):
+
+def client_ip(request):
+    xff = request.META.get('HTTP_X_FORWARDED_FOR')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
+
+
+def log_activity(request, action, model_name='', object_id='', detail='', username=None):
+    user = getattr(request, 'user', None)
+    authed = user if (user and user.is_authenticated) else None
+    # `username` override is needed for auth events (during login the request
+    # user is still anonymous, but we want to record who attempted/logged in).
+    name = username if username is not None else (getattr(user, 'username', '') or '')
+    ActivityLog.objects.create(
+        user=authed,
+        username=name,
+        action=action,
+        model_name=model_name,
+        object_id=str(object_id or ''),
+        detail=detail[:255],
+        ip_address=client_ip(request),
+    )
+
+
+class AuditLogMixin:
+    """Records create/update/delete actions on a viewset to the ActivityLog."""
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        log_activity(self.request, 'create', obj.__class__.__name__, getattr(obj, 'pk', ''))
+        return obj
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        log_activity(self.request, 'update', obj.__class__.__name__, getattr(obj, 'pk', ''))
+        return obj
+
+    def perform_destroy(self, instance):
+        name, pk = instance.__class__.__name__, instance.pk
+        super().perform_destroy(instance)
+        log_activity(self.request, 'delete', name, pk)
+
+class AccountViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = Account.objects.all().order_by('code')
     serializer_class = AccountSerializer
+    permission_classes = [RoleBasedPermission]
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -39,9 +84,10 @@ class AccountViewSet(viewsets.ModelViewSet):
             )
 
 
-class PartnerViewSet(viewsets.ModelViewSet):
+class PartnerViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = Partner.objects.all().order_by('name')
     serializer_class = PartnerSerializer
+    permission_classes = [RoleBasedPermission]
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -53,9 +99,10 @@ class PartnerViewSet(viewsets.ModelViewSet):
             )
 
 
-class JournalEntryViewSet(viewsets.ModelViewSet):
+class JournalEntryViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = JournalEntry.objects.all().order_by('-date', '-id')
     serializer_class = JournalEntrySerializer
+    permission_classes = [RoleBasedPermission]
 
     @action(detail=True, methods=['post'], url_path='post')
     def post_journal(self, request, pk=None):
@@ -67,9 +114,10 @@ class JournalEntryViewSet(viewsets.ModelViewSet):
             raise DRFValidationError(e.message)
 
 
-class InventoryItemViewSet(viewsets.ModelViewSet):
+class InventoryItemViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = InventoryItem.objects.all().order_by('sku')
     serializer_class = InventoryItemSerializer
+    permission_classes = [RoleBasedPermission]
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -84,11 +132,13 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
 class StockTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = StockTransaction.objects.all().order_by('-timestamp')
     serializer_class = StockTransactionSerializer
+    permission_classes = [RoleBasedPermission]
 
 
-class InvoiceViewSet(viewsets.ModelViewSet):
+class InvoiceViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.all().order_by('-issue_date', '-id')
     serializer_class = InvoiceSerializer
+    permission_classes = [RoleBasedPermission]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -191,9 +241,10 @@ def _suggest(statement, bank_account_ids, top=3):
     return out
 
 
-class BankStatementLineViewSet(viewsets.ModelViewSet):
+class BankStatementLineViewSet(AuditLogMixin, viewsets.ModelViewSet):
     queryset = BankStatementLine.objects.all().order_by('date', 'id')
     serializer_class = BankStatementLineSerializer
+    permission_classes = [RoleBasedPermission]
 
     # DRF's default parsers (JSON, Form, MultiPart) are active, so file uploads
     # work without extra configuration.
@@ -511,65 +562,111 @@ class BalanceSheetView(APIView):
 
 from rest_framework.permissions import AllowAny
 
+# Account-lockout policy: too many recent failed logins for a username blocks it.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
+
+def _recent_failures(username):
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+    return ActivityLog.objects.filter(action='login_failed', username=username, timestamp__gte=since).count()
+
+
 class SignUpView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = 'signup'
 
     def post(self, request):
         from django.contrib.auth.models import User
+        from django.contrib.auth.password_validation import validate_password
         from rest_framework.authtoken.models import Token
-        
-        username = request.data.get('username')
+
+        username = (request.data.get('username') or '').strip()
         password = request.data.get('password')
         email = request.data.get('email', '')
 
         if not username or not password:
-            return Response(
-                {"detail": "Username and password are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+            return Response({"detail": "Username and password are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
         if User.objects.filter(username=username).exists():
-            return Response(
-                {"detail": "Username already exists."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "Username already exists."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Enforce Django's password validators (length, common, numeric, similarity).
+        try:
+            validate_password(password)
+        except DjangoValidationError as e:
+            return Response({"detail": " ".join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
 
         user = User.objects.create_user(username=username, email=email, password=password)
+        # New self-service accounts get the lowest-privilege role by default.
+        role = user_role(user)
         token, _ = Token.objects.get_or_create(user=user)
+        log_activity(request, 'signup', 'User', user.pk, detail=f"role={role}", username=user.username)
         return Response({
             "token": token.key,
             "username": user.username,
-            "email": user.email
+            "email": user.email,
+            "role": role,
         }, status=status.HTTP_201_CREATED)
 
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = 'login'
 
     def post(self, request):
         from django.contrib.auth import authenticate
         from rest_framework.authtoken.models import Token
-        
-        username = request.data.get('username')
+
+        username = (request.data.get('username') or '').strip()
         password = request.data.get('password')
 
         if not username or not password:
+            return Response({"detail": "Username and password are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Account lockout after repeated failures.
+        if _recent_failures(username) >= LOGIN_MAX_FAILURES:
             return Response(
-                {"detail": "Username and password are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+                {"detail": f"Account temporarily locked due to repeated failed logins. Try again in {LOGIN_LOCKOUT_MINUTES} minutes."},
+                status=status.HTTP_403_FORBIDDEN)
 
         user = authenticate(username=username, password=password)
         if user is None:
-            return Response(
-                {"detail": "Invalid credentials."},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            log_activity(request, 'login_failed', 'User', '', detail=username, username=username)
+            return Response({"detail": "Invalid credentials."},
+                            status=status.HTTP_401_UNAUTHORIZED)
 
         token, _ = Token.objects.get_or_create(user=user)
+        log_activity(request, 'login', 'User', user.pk, username=user.username)
         return Response({
             "token": token.key,
             "username": user.username,
-            "email": user.email
+            "email": user.email,
+            "role": user_role(user),
         }, status=status.HTTP_200_OK)
+
+
+class MeView(APIView):
+    """Returns the authenticated user's identity and role."""
+    def get(self, request):
+        u = request.user
+        return Response({
+            "username": u.username,
+            "email": u.email,
+            "role": user_role(u),
+            "is_superuser": u.is_superuser,
+        })
+
+
+class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only audit trail. Admin and Super Admin only."""
+    queryset = ActivityLog.objects.all()
+    serializer_class = None  # set below to avoid forward-reference
+    permission_classes = [IsAdminRole]
+
+    def get_serializer_class(self):
+        from .serializers import ActivityLogSerializer
+        return ActivityLogSerializer
 
