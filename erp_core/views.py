@@ -11,13 +11,10 @@ from decimal import Decimal, InvalidOperation
 import datetime
 
 from .models import (
-    Account, Partner, JournalEntry, TransactionLine, 
-    InventoryItem, StockTransaction, Invoice, InvoiceLine, BankStatementLine
+    JournalEntry, TransactionLine, BankStatementLine
 )
 from .serializers import (
-    AccountSerializer, PartnerSerializer, JournalEntrySerializer, 
-    InventoryItemSerializer, StockTransactionSerializer, InvoiceSerializer, 
-    BankStatementLineSerializer
+    JournalEntrySerializer, BankStatementLineSerializer
 )
 from .utils import (
     process_invoice_posting, get_or_create_default_accounts,
@@ -69,34 +66,6 @@ class AuditLogMixin:
         super().perform_destroy(instance)
         log_activity(self.request, 'delete', name, pk)
 
-class AccountViewSet(AuditLogMixin, viewsets.ModelViewSet):
-    queryset = Account.objects.all().order_by('code')
-    serializer_class = AccountSerializer
-    permission_classes = [RoleBasedPermission]
-
-    def destroy(self, request, *args, **kwargs):
-        try:
-            return super().destroy(request, *args, **kwargs)
-        except ProtectedError:
-            return Response(
-                {"detail": "Cannot delete account: it is referenced by transactions or other records."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-
-class PartnerViewSet(AuditLogMixin, viewsets.ModelViewSet):
-    queryset = Partner.objects.all().order_by('name')
-    serializer_class = PartnerSerializer
-    permission_classes = [RoleBasedPermission]
-
-    def destroy(self, request, *args, **kwargs):
-        try:
-            return super().destroy(request, *args, **kwargs)
-        except ProtectedError:
-            return Response(
-                {"detail": "Cannot delete partner: it is referenced by transactions or other records."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
 
 class JournalEntryViewSet(AuditLogMixin, viewsets.ModelViewSet):
@@ -114,57 +83,6 @@ class JournalEntryViewSet(AuditLogMixin, viewsets.ModelViewSet):
             raise DRFValidationError(e.message)
 
 
-class InventoryItemViewSet(AuditLogMixin, viewsets.ModelViewSet):
-    queryset = InventoryItem.objects.all().order_by('sku')
-    serializer_class = InventoryItemSerializer
-    permission_classes = [RoleBasedPermission]
-
-    def destroy(self, request, *args, **kwargs):
-        try:
-            return super().destroy(request, *args, **kwargs)
-        except ProtectedError:
-            return Response(
-                {"detail": "Cannot delete inventory item: it has stock movements or is in invoices."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-
-class StockTransactionViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = StockTransaction.objects.all().order_by('-timestamp')
-    serializer_class = StockTransactionSerializer
-    permission_classes = [RoleBasedPermission]
-
-
-class InvoiceViewSet(AuditLogMixin, viewsets.ModelViewSet):
-    queryset = Invoice.objects.all().order_by('-issue_date', '-id')
-    serializer_class = InvoiceSerializer
-    permission_classes = [RoleBasedPermission]
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        if instance.status != 'Draft':
-            return Response(
-                {"detail": "Posted or Paid invoices cannot be deleted. Please reverse or void the transaction instead."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        try:
-            return super().destroy(request, *args, **kwargs)
-        except ProtectedError:
-            return Response(
-                {"detail": "Cannot delete invoice: it is referenced by other records."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=True, methods=['post'], url_path='post')
-    def post_invoice(self, request, pk=None):
-        try:
-            journal_entry = process_invoice_posting(pk)
-            return Response({
-                'status': 'Invoice posted successfully',
-                'journal_entry_id': journal_entry.id
-            }, status=status.HTTP_200_OK)
-        except DjangoValidationError as e:
-            raise DRFValidationError(e.message)
 
 
 def _bank_accounts():
@@ -395,32 +313,12 @@ class BankStatementLineViewSet(AuditLogMixin, viewsets.ModelViewSet):
 
 class DashboardStatsView(APIView):
     def get(self, request):
-        # 1. Total Receivables (Receivable Account Balance)
-        try:
-            ar_acc = Account.objects.get(code=RECEIVABLES_CODE)
-            receivables = ar_acc.balance
-        except Account.DoesNotExist:
-            receivables = Decimal('0.00')
-
-        # 2. Total Payables (Payable Account Balance)
-        try:
-            ap_acc = Account.objects.get(code=PAYABLES_CODE)
-            payables = ap_acc.balance
-        except Account.DoesNotExist:
-            payables = Decimal('0.00')
-
-        # 3. Cash & Bank Balance (Let's sum cash/bank accounts, defaulting to a custom code '10100' or default remaining cash)
-        # We can dynamically sum all Asset accounts that are not AR or Inventory
-        cash_assets = Account.objects.filter(account_type='Asset').exclude(code__in=['11000', '12000'])
-        cash_balance = sum(acc.balance for acc in cash_assets)
-
-        # 4. Inventory Valuation
-        inventory_valuation = sum(item.stock_qty * item.avg_unit_cost for item in InventoryItem.objects.all())
-
-        # 5. Net Profit (Revenue - Expenses)
-        revenue_sum = sum(acc.balance for acc in Account.objects.filter(account_type='Revenue'))
-        expense_sum = sum(acc.balance for acc in Account.objects.filter(account_type='Expense'))
-        net_profit = revenue_sum - expense_sum
+        # All features removed - return minimal dashboard data
+        receivables = Decimal('0.00')
+        payables = Decimal('0.00')
+        cash_balance = Decimal('0.00')
+        inventory_valuation = Decimal('0.00')
+        net_profit = Decimal('0.00')
 
         # Recent transactions
         recent_entries = JournalEntry.objects.all().order_by('-date', '-id')[:5]
@@ -447,116 +345,37 @@ class DashboardStatsView(APIView):
 
 class TrialBalanceView(APIView):
     def get(self, request):
-        get_or_create_default_accounts()  # Make sure accounts exist
-        accounts = Account.objects.all().order_by('code')
-        tb_lines = []
-        total_debit = Decimal('0.00')
-        total_credit = Decimal('0.00')
-
-        for acc in accounts:
-            debit = Decimal('0.00')
-            credit = Decimal('0.00')
-
-            # Show debit or credit based on the account type and its balance
-            if acc.account_type in ['Asset', 'Expense']:
-                if acc.balance >= 0:
-                    debit = acc.balance
-                else:
-                    credit = abs(acc.balance)
-            else:  # Liability, Equity, Revenue
-                if acc.balance >= 0:
-                    credit = acc.balance
-                else:
-                    debit = abs(acc.balance)
-
-            tb_lines.append({
-                'code': acc.code,
-                'name': acc.name,
-                'account_type': acc.account_type,
-                'debit': debit,
-                'credit': credit
-            })
-            total_debit += debit
-            total_credit += credit
-
+        # Chart of Accounts removed - return empty trial balance
         return Response({
-            'lines': tb_lines,
-            'total_debit': total_debit,
-            'total_credit': total_credit
+            'lines': [],
+            'total_debit': Decimal('0.00'),
+            'total_credit': Decimal('0.00')
         })
 
 
 class ProfitAndLossView(APIView):
     def get(self, request):
-        get_or_create_default_accounts()
-        revenue_accounts = Account.objects.filter(account_type='Revenue')
-        expense_accounts = Account.objects.filter(account_type='Expense')
-
-        revenue_lines = []
-        total_revenue = Decimal('0.00')
-        for acc in revenue_accounts:
-            revenue_lines.append({'code': acc.code, 'name': acc.name, 'amount': acc.balance})
-            total_revenue += acc.balance
-
-        expense_lines = []
-        total_expense = Decimal('0.00')
-        for acc in expense_accounts:
-            expense_lines.append({'code': acc.code, 'name': acc.name, 'amount': acc.balance})
-            total_expense += acc.balance
-
-        net_income = total_revenue - total_expense
-
+        # Chart of Accounts removed - return empty P&L
         return Response({
-            'revenues': revenue_lines,
-            'total_revenue': total_revenue,
-            'expenses': expense_lines,
-            'total_expense': total_expense,
-            'net_income': net_income
+            'revenues': [],
+            'total_revenue': Decimal('0.00'),
+            'expenses': [],
+            'total_expense': Decimal('0.00'),
+            'net_income': Decimal('0.00')
         })
 
 
 class BalanceSheetView(APIView):
     def get(self, request):
-        get_or_create_default_accounts()
-        assets = Account.objects.filter(account_type='Asset')
-        liabilities = Account.objects.filter(account_type='Liability')
-        equity = Account.objects.filter(account_type='Equity')
-
-        # Add P&L Net income to Equity for current balance sheet
-        revenue_sum = sum(acc.balance for acc in Account.objects.filter(account_type='Revenue'))
-        expense_sum = sum(acc.balance for acc in Account.objects.filter(account_type='Expense'))
-        net_income = revenue_sum - expense_sum
-
-        asset_lines = []
-        total_assets = Decimal('0.00')
-        for acc in assets:
-            asset_lines.append({'code': acc.code, 'name': acc.name, 'amount': acc.balance})
-            total_assets += acc.balance
-
-        liability_lines = []
-        total_liabilities = Decimal('0.00')
-        for acc in liabilities:
-            liability_lines.append({'code': acc.code, 'name': acc.name, 'amount': acc.balance})
-            total_liabilities += acc.balance
-
-        equity_lines = []
-        total_equity = Decimal('0.00')
-        for acc in equity:
-            equity_lines.append({'code': acc.code, 'name': acc.name, 'amount': acc.balance})
-            total_equity += acc.balance
-
-        # We display net income as part of retained earnings
-        equity_lines.append({'code': '39999', 'name': 'Current Year Net Profit', 'amount': net_income})
-        total_equity += net_income
-
+        # Chart of Accounts removed - return empty balance sheet
         return Response({
-            'assets': asset_lines,
-            'total_assets': total_assets,
-            'liabilities': liability_lines,
-            'total_liabilities': total_liabilities,
-            'equity': equity_lines,
-            'total_equity': total_equity,
-            'total_liabilities_and_equity': total_liabilities + total_equity
+            'assets': [],
+            'total_assets': Decimal('0.00'),
+            'liabilities': [],
+            'total_liabilities': Decimal('0.00'),
+            'equity': [],
+            'total_equity': Decimal('0.00'),
+            'total_liabilities_and_equity': Decimal('0.00')
         })
 
 

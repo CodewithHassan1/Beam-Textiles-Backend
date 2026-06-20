@@ -1,20 +1,13 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    AccountViewSet, PartnerViewSet, JournalEntryViewSet,
-    InventoryItemViewSet, StockTransactionViewSet, InvoiceViewSet,
-    BankStatementLineViewSet, DashboardStatsView, TrialBalanceView,
+    JournalEntryViewSet, BankStatementLineViewSet, DashboardStatsView, TrialBalanceView,
     ProfitAndLossView, BalanceSheetView, SignUpView, LoginView,
     MeView, ActivityLogViewSet
 )
 
 router = DefaultRouter()
-router.register(r'accounts', AccountViewSet, basename='account')
-router.register(r'partners', PartnerViewSet, basename='partner')
 router.register(r'journals', JournalEntryViewSet, basename='journal')
-router.register(r'inventory', InventoryItemViewSet, basename='inventory')
-router.register(r'stock-transactions', StockTransactionViewSet, basename='stock-transaction')
-router.register(r'invoices', InvoiceViewSet, basename='invoice')
 router.register(r'bank-statements', BankStatementLineViewSet, basename='bank-statement')
 router.register(r'activity-logs', ActivityLogViewSet, basename='activity-log')
 
